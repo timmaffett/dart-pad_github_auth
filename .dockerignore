@@ -1,0 +1,8 @@
+# files we don't want in docker image
+*/.timnotes
+privateInfo.txt
+*/certificates
+statebox.*
+#Once the following files are edited with secrets UNCOMMENT following lines
+#tools/setEnvironmentalVars.bat
+#tools/setEnvironmentalVars.sh

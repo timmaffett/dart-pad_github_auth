@@ -1,0 +1,10 @@
+# https://dart.dev/guides/libraries/private-files
+.dart_tool/
+.packages
+pubspec.lock
+.timnotes/
+certificates/
+statebox.*
+#Once the following files are edited with secrets UNCOMMENT following lines
+#tools/setEnvironmentalVars.bat
+#tools/setEnvironmentalVars.sh
