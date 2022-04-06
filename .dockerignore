@@ -1,6 +1,7 @@
 # files we don't want in docker image
 */.timnotes
 privateInfo.txt
+*/private
 */certificates
 statebox.*
 #Once the following files are edited with secrets UNCOMMENT following lines

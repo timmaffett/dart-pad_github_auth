@@ -2,6 +2,28 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
+//
+// This presents an API for initiating OAuth requests to github and then
+// redirecting back to the calling application.  This was created as the
+// part of the Dart-Pad GitHub authorization interface but could be used
+// for initiating OAuth authorization from any app.
+//
+// When testing locally it will require certificates to be generated so that
+// it can create an HTTPS server.  The tool/makeLocalhostCertificates scripts
+// will do this automatically.
+//
+// A OAuth application must be registered with GitHub and the CLIENT_ID and
+// CLIENT_SECRET must be stored in enviromental variables.
+//
+// The tool/setEnvironmentalVars scripts can be edited with the GitHub
+// assigned values and used to set the required environmental variables.
+// Once edited the values are added to the script files the .gitignore and
+// .dockerignore files should be edited to exclude these files (there are lines
+// that can be uncommented to accomplish this) 
+//
+//  See README.md for more details
+//
+// author:  github.com/timmaffett
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,17 +33,11 @@ import 'package:hive/hive.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart' as shelf_router;
-import 'package:shelf_static/shelf_static.dart' as shelf_static;
 
 late final Box stateBox;
 
 const passPhraseUsedToGenerateCertificates='dartdart';
 
-/*
-
-Homepage: https://timmaffett.github.io/github
-
-*/
 late final String clientId;
 late final String clientSecret;
 late final String localDebug;
@@ -66,7 +82,7 @@ Future main() async {
   authReturnUrl = stripQuotes(Platform.environment['AUTH_RETURN_URL']) ?? 'https://localhost:8080/authorized';
   returnToAppUrl = stripQuotes(Platform.environment['RETURN_TO_APP_URL']) ?? 'http://localhost:8000/index.html';
 
-  runningLocalDebug = (localDebug=='true');
+  runningLocalDebug = (localDebug=='true') || (authReturnUrl.contains('localhost'));
 
   bool missingEnvVariables=false;
   if(clientId=='MissingClientIdEnvironmentalVariable') {
@@ -77,7 +93,6 @@ Future main() async {
     print('CLIENT_SECRET environmental variable not set! This is REQUIRED.');
     missingEnvVariables=true;
   }
-
   if(missingEnvVariables) {
     print("Ensure all required environmental variables are set and re-run.");
     exit(1);
@@ -96,23 +111,12 @@ Future main() async {
   print('Got ENV AUTH_RETURN_URL=$authReturnUrl');
   print('Got ENV RETURN_TO_APP_URL=$returnToAppUrl');
 
-  // See https://pub.dev/documentation/shelf/latest/shelf/Cascade-class.html
-  final cascade = Cascade()
-      // First, serve files from the 'public' directory
-      //.add(_staticHandler)
-      // If a corresponding file is not found, send requests to a `Router`
-      .add(_router);
-
-  // See https://pub.dev/documentation/shelf/latest/shelf_io/serve.html
-  late final server;
+  late final HttpServer server;
   if(runningLocalDebug) {
     // For local debug we run as a HTTPS server so we can properly test
     server = await shelf_io.serve(
-      // See https://pub.dev/documentation/shelf/latest/shelf/logRequests.html
-      logRequests()
-          // See https://pub.dev/documentation/shelf/latest/shelf/MiddlewareExtensions/addHandler.html
-          .addHandler(cascade.handler),
-      InternetAddress.anyIPv4, // Allows external connections
+      logRequests().addHandler(_router),
+      InternetAddress.anyIPv4,
       port,
       securityContext: getSecurityContext()
     );
@@ -120,23 +124,14 @@ Future main() async {
     // when running in gcloud run container we will have incoming https connections, so run as simple
     // server
     server = await shelf_io.serve(
-      // See https://pub.dev/documentation/shelf/latest/shelf/logRequests.html
-      logRequests()
-          // See https://pub.dev/documentation/shelf/latest/shelf/MiddlewareExtensions/addHandler.html
-          .addHandler(cascade.handler),
-      InternetAddress.anyIPv4, // Allows external connections
+      logRequests().addHandler(_router),
+      InternetAddress.anyIPv4,
       port
     );
   }
 
-  print('Serving at http://${server.address.host}:${server.port}');
+  print('Serving at https://${server.address.host}:${server.port}');
 }
-
-/*
-// Serve files from the file system.
-final _staticHandler =
-    shelf_static.createStaticHandler('public', defaultDocument: 'index.html');
-*/
 
 // Router instance to handler requests.
 final _router = shelf_router.Router()
@@ -146,13 +141,23 @@ final _router = shelf_router.Router()
       return Response.notFound('Page not found');
     });
 
-
+///  The calling app initiates a request for GitHub OAuth authorization by
+///  sending get request to /initiate/XXXXXXXXX where XXXXXX is a random
+///  alpha numeric token of at least 40 characters in length
+///  When the entire process is complete the browser will be redirected to
+///  the calling app at the URL defined by the RETURN_TO_APP_URL environmental
+///  variable.  The calling app will need to use the originally sent
+///  random token to decrypt the returned GitHub authorization token.
 Response _initiateHandler(Request request, String rand) {
   // see if we have anything stored
   dynamic stored = stateBox.get(rand);
   bool newRequest=false;
   int timestamp=0;
   int nowTimeStamp = DateTime.now().millisecondsSinceEpoch;
+
+  if(rand.isEmpty || rand.length<40) {
+    return Response.ok('Random token must be >=40 characters in length');
+  }
 
   if(stored==null) {
     timestamp = nowTimeStamp;
@@ -166,6 +171,7 @@ Response _initiateHandler(Request request, String rand) {
 
   stateBox.put(rand, toStore);
   
+  // Take this opportunity to do stateBox cleanup and remove any old entries
   if(stateBox.length>1) {
     try {
       // check everything in the box for expiration
@@ -183,7 +189,6 @@ Response _initiateHandler(Request request, String rand) {
       print('Exception $e caught during state box cleanup');
     }
   }
-  print('Initiated $rand = ${toStore.toString()}');
 
   /*
     Incoming Random String from DartPad
@@ -202,7 +207,6 @@ Response _initiateHandler(Request request, String rand) {
                   
     url += 'client_id=$clientId&redirect_uri=$authReturnUrl&scope=gist&state=$rand';
 
-    //print('Created URL $url to redirect to');
     print('Redirecting to GITHUB authorize');
     Map<String,String> headers = {'location':url};
     return Response(302,headers:headers);
@@ -215,35 +219,36 @@ Response _initiateHandler(Request request, String rand) {
   return Response(302,headers:headers);
 }
 
-
-
+/// This entry point is called by the GitHub OAuth process and is the
+/// client return authorization handler defined on GitHub when creating 
+/// the CLIENT_ID and CLIENT_SECRET for this server.
 Future<Response> _returnAuthorizeHandler(Request request) async {
   /*
-  REdirects BACK to my authorize page with 
-  code=XXXXXXXX
-  and
-  state=RANDOMSTR  we sent earlier	
-    
-  Now we exchange this code=XXXX for an access token
+    REdirects BACK to my authorize page with 
+    code=XXXXXXXX
+    and
+    state=RANDOMSTR  we sent earlier	
+      
+    Now we exchange this code=XXXX for an access token
 
-  POST https://github.com/login/oauth/access_token
+    POST https://github.com/login/oauth/access_token
 
-  client_id=XXXXXXX
-  client_secret=MYCLIENTSECRET
-  code=FROMINCOMING_PARAM 'code'
-  redirect_uri=https://timmaffett.github.io/saving/authorized
+    client_id=XXXXXXX
+    client_secret=MYCLIENTSECRET
+    code=FROMINCOMING_PARAM 'code'
+    redirect_uri=https://timmaffett.github.io/saving/authorized
 
 
-  PUT "Accept: application/json" in ACCEPT HEADER on POST
-  and get back JSON
+    PUT "Accept: application/json" in ACCEPT HEADER on POST
+    and get back JSON
 
-  Accept: application/json
-  {
-    "access_token":"gho_16C7e42F292c6912E7710c838347Ae178B4a",
-    "scope":"repo,gist",
-    "token_type":"bearer"
-  }
-    
+    Accept: application/json
+    {
+      "access_token":"gho_16C7e42F292c6912E7710c838347Ae178B4a",
+      "scope":"repo,gist",
+      "token_type":"bearer"
+    }
+      
   */
   print('Entered _returnAuthorizeHandler');
 
@@ -260,12 +265,10 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
     dynamic stored = stateBox.get(state);
 
     if(stored==null) {
-      // ERROR!! we did not have a record of this
+      // ERROR!! we did not have a record of this initial request - ignore
     } else {
       validCallback=true;
-
       var client = http.Client();
-
       /*
         Now we exchange this code=XXXX for an access token
 
@@ -281,12 +284,11 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
 
         Accept: application/json
         {
-          "access_token":"gho_16C7e42F292c6912E7710c838347Ae178B4a",
-          "scope":"repo,gist",
+          "access_token":"gho_XXXXXXXXX",
+          "scope":"gist",
           "token_type":"bearer"
         }
       */
-
       final String githubExchangeCodeUri = 'https://github.com/login/oauth/access_token';
       final Map<String, dynamic> map = {
         'client_id':clientId,
@@ -295,7 +297,6 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
         'redirect_uri':authReturnUrl,
       };
       final String bodydata = json.encode(map);
-      ///print('In RETURN, exchanging code bodydata=$bodydata');
 
       await client.post(Uri.parse(githubExchangeCodeUri),
                   headers:{
@@ -305,17 +306,9 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
                   body:bodydata
           ).then((http.Response postResponse) {
         late String accessToken, scope, tokenType;    
-        //DBG//print('Response status: ${postResponse.statusCode}');
-        //DBG//print('Response body: ${postResponse.contentLength}');
-        //DBG//print(postResponse.headers);
-        //DBG//print(postResponse.request);
-        //print('Body:\n${postResponse.body}');
         if (postResponse.statusCode >= 200 && postResponse.statusCode<=299) {
-          //DBG//print('CODE FOR TOKEN EXCHANGE WORKED!!!!');
           final retObj = jsonDecode(postResponse.body);
-          //print('access_token = ${retObj['access_token']}');
-          //DBG//print('scope = ${retObj['scope']}');
-          //DBG//print('token_type = ${retObj['token_type']}');
+
           accessToken = retObj['access_token'] as String;
           scope = retObj['scope'] as String;
           tokenType = retObj['token_type'] as String;
@@ -325,14 +318,12 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
           // we can delete this record because we are done
           stateBox.delete(state);
 
-          //DBG//print('Pre encrypt accessToken = $accessToken');
           // encrypt the auth token using the original random state
           String encrBase64AuthToken = encryptAndBase64EncodeAuthToken( accessToken, state);
           // Build URL to redirect back to the app
           backToAppUrl += '?gh=$encrBase64AuthToken&scope=$scope';
 
-          //DBG//print('POST encrypt the backToAppUrl=$backToAppUrl');
-
+          print('success - redirecting back to app');
         } else if (postResponse.statusCode == 404) {
           throw Exception('contentNotFound');
         } else if (postResponse.statusCode == 403) {
@@ -351,7 +342,6 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
     Map<String,String> headers = {'location':backToAppUrl};
     return Response(302,headers:headers);
   } catch (e) {
-    //return Response.badRequest(body:e.toString());
     // fall through and redirect back to app with 'authfailed'
   }
   // return to app with 'authfailed' to indicate error
@@ -360,6 +350,15 @@ Future<Response> _returnAuthorizeHandler(Request request) async {
   return Response(302,headers:headers);
 }
 
+/// Take the GitHub auth token [ghAuthToken] and the original random
+/// state string [randomStateWeWereSent] the client sent in the original  
+/// '/initiate/XXXXX' request and encrypt the token using the random state
+/// string.   This protects the GH token on the return and also allows the
+/// client to verify that we origin of the token.
+/// This is probably overkill, we could just XOR encrypt (or something simple),
+/// but erroring on the side of security can't hurt.
+/// The symetric decrypting routine in the comments below.  This is used on
+/// client to decrypt the received token.
 String encryptAndBase64EncodeAuthToken( String ghAuthToken, String randomStateWeWereSent ) {
   if(randomStateWeWereSent.isEmpty) {
     return 'ERROR-no stored initial state';
@@ -374,7 +373,38 @@ String encryptAndBase64EncodeAuthToken( String ghAuthToken, String randomStateWe
   
     return Uri.encodeComponent(encryptedToken.base64);
   } catch (e) {
-    print('CAUGHT EXCPETION during encryption ${e.toString()}');
+    print('CAUGHT EXCEPTION during encryption ${e.toString()}');
   }
-  return 'FAIL';
+  return 'ENCRYPTION_ERROR';
+}
+
+/// This is EXAMPLE routine to decrypt the encrypted token 
+/// created by encryptAndBase64EncodeAuthToken
+/// This is not used in the server code but is provided here as
+/// an example
+String decryptAuthTokenFromReturnedSecureAuthToken(
+  String encryptedBase64AuthToken, String randomStateWeSent) {
+  // retrieve the random state string we made for the original request in
+  // makeRandomSecureAuthInitiationUrl().  Our auth token was encrypted using
+  // this before sending it back to us, so use it to decrypt
+  try {
+    if (randomStateWeSent.isEmpty) {
+      return 'ERROR-no stored initial state';
+    }
+
+    final iv = IV.fromUtf8(randomStateWeSent.substring(0, 8));
+    final key = Key.fromUtf8(randomStateWeSent.substring(8, 40));
+    final sasla = Salsa20(key);
+    final encrypter = Encrypter(sasla);
+
+    final encryptedToken =
+        Encrypted.from64(Uri.decodeComponent(encryptedBase64AuthToken));
+
+    final decryptedAuthToken = encrypter.decrypt(encryptedToken, iv: iv);
+
+    return decryptedAuthToken;
+  } catch (e) {
+    print('CAUGHT EXCEPTION e=${e.toString()}');
+  }
+  return 'DECRYPTION_ERROR';
 }
