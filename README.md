@@ -1,11 +1,13 @@
 
 This presents an API for initiating OAuth requests to github and then redirecting back to the calling application.  This was created as the part of the Dart-Pad GitHub authorization interface but could be used for initiating OAuth authorization from any app.
 
-When testing locally it will require certificates to be generated so that it can create an HTTPS server.  The `tool/makeLocalhostCertificates.*` scripts will do this automatically.
+(note: provided scripts are provided in .sh and .bat versions for corresponding platforms)
+
+When testing locally it will require certificates to be generated so that it can create an HTTPS server.  The `tool/makeLocalhostCertificates` scripts will do this automatically.  OpenSSL must be installed to use this script.
 
 A OAuth application must be registered with GitHub and the `CLIENT_ID` and `CLIENT_SECRET` must be stored in enviromental variables to make then available to dart code server.
 
-The `tool/setEnvironmentalVars.*` scripts can be edited with the GitHub assigned values and used to set the required environmental variables.  Once the `setEnvironmentalVar.*` contain secrets the `.gitignore` and `.dockerignore` files should be edited to exclude these files (there are lines that can be uncommented to accomplish this).
+The `tool/setEnvironmentalVars` scripts can be edited with the GitHub assigned values and used to set the required environmental variables.  Once the `setEnvironmentalVar` contain secrets the `.gitignore` and `.dockerignore` files should be edited to exclude these files (there are lines that can be uncommented to accomplish this).
 
 When the server is run it will report the environmental variables found, and will exit if the required environmental variables are not found.  The CLIENT_ID and CLIENT_SECRET are masked to last 4 digits to protect the secrets.
 
