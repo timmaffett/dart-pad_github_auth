@@ -26,4 +26,4 @@ cat localhost.key localhost.crt ../CA.pem >localhost.pem
 # returning to root
 cd ../../..
 # renaming directory so it is excluded from docker and git
-#ren make_localhost_certs certificates
+mv make_localhost_certs certificates
